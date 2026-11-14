@@ -4,12 +4,12 @@
 | File | Purpose |
 |---|---|
 | `lib/guard.ts` | SSRF defence: URL/port/scheme validation, IP-literal and internal-host rejection, gov/mil denylist, public-IP-only DNS, DNS pinning, per-hop redirect re-validation, size/time caps |
-| `lib/token.ts`, `lib/ownership.ts` | Domain-ownership proof (DNS TXT or `/.well-known/` file), checked live on every deep scan; fails closed without `CS_VERIFY_SECRET` |
+| `lib/token.ts`, `lib/ownership.ts` | Domain-ownership proof helpers; no longer required for deep scans |
 | `lib/ratelimit.ts` | Per-IP and per-target rate limits; pseudonymised audit logging |
 | `lib/findings.ts` | Findings with severity, confidence (confirmed/likely/manual), CWE, OWASP Top 10:2025, WSTG; guided manual checks; SARIF export |
 | `lib/deep.ts` | Non-destructive deep checks (exposed .git/.env, CORS, methods, SRI, mixed content, inert reflection probe); max 9 requests |
 | `app/api/verify/route.ts` | Issues and checks the ownership challenge |
-| `app/ScanExtras.tsx` | UI: findings list, manual-check checklist, verification instructions |
+| `app/ScanExtras.tsx` | UI: findings list and manual-check checklist |
 | `tests/security.test.mjs` | 14 unit tests |
 
 ## Fixed
@@ -24,11 +24,11 @@
 
 ## API
 `POST /api/audit` `{ "url": "example.com", "tier": "basic" | "deep", "format": "json" | "sarif" }`
-Deep on an unverified domain → `403 { code: "NOT_VERIFIED", challenge }`.
+Deep scans require an authorization attestation; they do not require a domain-ownership challenge.
 
 ## Run
 ```
-cp .env.example .env.local   # fill CS_VERIFY_SECRET
+cp .env.example .env.local   # CS_VERIFY_SECRET is only needed for optional basic-scan ownership checks
 npm run dev
 node --experimental-strip-types --no-warnings --test tests/security.test.mjs
 ```

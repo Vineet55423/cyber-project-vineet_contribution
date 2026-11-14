@@ -2,7 +2,7 @@
 
 CyberShield is a full-stack, enterprise-grade web vulnerability scanner and threat intelligence platform built with **Next.js 16 (Turbopack) + React 19 + Tailwind CSS**.
 
-Engineered with a **"Safe by Design"** philosophy, CyberShield solves the fundamental pitfalls of automated scanners: abuse prevention, anti-SSRF perimeter isolation, domain ownership verification, and human-in-the-loop workflows with confidence ratings.
+Engineered with a **"Safe by Design"** philosophy, CyberShield focuses on abuse prevention, anti-SSRF perimeter isolation, authorization attestations for active scans, and human-in-the-loop workflows with confidence ratings.
 
 ---
 
@@ -13,18 +13,14 @@ Engineered with a **"Safe by Design"** philosophy, CyberShield solves the fundam
 | Scan Tier | Scope & Intrusiveness | Target Prerequisites | Checks Performed |
 |---|---|---|---|
 | **Basic Tier** | **Passive & Non-Intrusive**<br>(Equivalent to standard browser inspection) | Any non-denylisted target | • **Security Headers:** HSTS, CSP, X-Frame-Options, X-Content-Type-Options, Referrer-Policy, Permissions-Policy<br>• **TLS/SSL Handshake:** TLS 1.3/1.2 validation, cipher suites, certificate authority chain, expiry countdown, SHA-256 fingerprint<br>• **Cookie Isolation:** `Secure`, `HttpOnly`, `SameSite`<br>• **Supply Chain & Scripts:** Subresource Integrity (SRI) on 3rd-party scripts, mixed content audit, known-vulnerable JS libraries (jQuery, Bootstrap, AngularJS, Lodash)<br>• **DNS & Email Posture:** SPF, DMARC, and MX records<br>• **Information Leakage:** Server banners, `robots.txt`, and RFC 9116 `security.txt`<br>• **OWASP Top 10 (2021)** compliance matrix |
-| **Deep Tier** | **Active Probing & Exploit Indicators**<br>(Safe non-destructive canary payloads) | **Cryptographic Proof of Control Required** + Signed Legal Scope Attestation | • **Reflected XSS:** Non-executable canary tokens injected into query parameters<br>• **Open Redirects:** Destination validation against external probes<br>• **SQL Injection:** Safe single-quote syntax anomaly detection (non-destructive)<br>• **Sensitive File Exposure:** `.env`, `.git/HEAD`, `phpinfo.php`, and administrative panels<br>• **Active CORS:** Origin reflection and credential theft probes<br>• **Authentication Hygiene:** Rate-limiting detection on login endpoints |
+| **Deep Tier** | **Active Probing & Exploit Indicators**<br>(Safe non-destructive canary payloads) | **Signed Legal Scope Attestation** | • **Reflected XSS:** Non-executable canary tokens injected into query parameters<br>• **Open Redirects:** Destination validation against external probes<br>• **SQL Injection:** Safe single-quote syntax anomaly detection (non-destructive)<br>• **Sensitive File Exposure:** `.env`, `.git/HEAD`, `phpinfo.php`, and administrative panels<br>• **Active CORS:** Origin reflection and credential theft probes<br>• **Authentication Hygiene:** Rate-limiting detection on login endpoints |
 
 ---
 
 ### 2. Abuse Prevention & Target Authorization
 
 - **High-Profile Denylist:** Scanning high-profile domains (e.g., `google.com`, `apple.com`, `gov.in`, critical infrastructure) is automatically blocked.
-- **Proof of Ownership Verification (`/api/verify`):** Deep scans require the user to verify domain control via:
-  1. **DNS TXT Record:** `cybershield-verify=<token>`
-  2. **Well-Known File:** `https://<domain>/.well-known/cybershield-verify.txt`
-  3. **HTML `<meta>` Tag:** `<meta name="cybershield-verify" content="<token>">`
-- **Legal Attestation & Scope Agreement:** Explicit checkbox agreement required, binding the tester to responsible disclosure laws (Section 43/66 of the Indian IT Act, US CFAA).
+- **Legal Attestation & Scope Agreement:** Deep scans require an explicit checkbox confirming authorization and scope before active tests can run.
 - **Abuse Controls:** Target rate-limiting, concurrency caps, and kill-switch capabilities.
 
 ---
@@ -82,7 +78,7 @@ CYBERSHIELD TEST SUITE: END-TO-END SYSTEM VERIFICATION
 [PASS] SSRF Protection: 127.0.0.1 loopback blocked pre-connection
 [PASS] SSRF Protection: 169.254.169.254 AWS metadata IP blocked
 [PASS] Domain Verification: Issues verification token and multi-method instructions (DNS/File/Meta)
-[PASS] Deep Scan Authorization Gate: Rejects intrusive scans without verified domain ownership
+[PASS] Deep Scan Authorization Gate: Requires an explicit legal authorization attestation
 [PASS] Deep Scan Execution: Generates findings with confidence levels, OWASP/CWE mappings, and manual checklist
 [PASS] Confidence Grading: Every finding has verified confidence levels (confirmed, likely, needs-manual-review)
 [PASS] Human-in-the-Loop: Guided manual checklist generated for business logic, IDOR, and race conditions

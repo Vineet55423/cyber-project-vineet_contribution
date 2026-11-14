@@ -1,6 +1,5 @@
 import { NextRequest, NextResponse } from "next/server";
 import { GuardError, parseTarget, resolvePublic } from "@/lib/guard";
-import { checkOwnership, buildChallenge } from "@/lib/ownership";
 import { recordAttestation } from "@/lib/attestation";
 import { clientIp, rateLimit, pseudonymise } from "@/lib/ratelimit";
 import {
@@ -47,7 +46,7 @@ export async function POST(req: NextRequest) {
           error: friendly.message,
           title: "Legal Attestation Required",
           friendly_message: friendly.message,
-          hint: "Check the 'Legal Attestation & Scope Agreement' box in the verification panel.",
+          hint: "Check the Legal Attestation & Scope Agreement box before starting Deep Scan.",
           code: "ATTESTATION_REQUIRED",
           attestation_required: true,
           is_user_error: true,
@@ -56,36 +55,7 @@ export async function POST(req: NextRequest) {
       );
     }
 
-    // 2. Strict Live Technical Verification Gate (Re-verified on EVERY request; no client bypass)
-    const own = await checkOwnership(hostname);
-    if (!own.verified) {
-      const challenge = buildChallenge(hostname);
-      const friendly = formatFriendlyError(
-        "NOT_VERIFIED",
-        `Domain ownership verification required. ${own.detail}`
-      );
-      return json(
-        {
-          error: friendly.message,
-          title: friendly.title,
-          friendly_message: friendly.message,
-          hint: "Publish the DNS TXT record, upload the .well-known file, or insert the HTML meta tag, then retry.",
-          code: "NOT_VERIFIED",
-          verification_required: true,
-          detail: own.detail,
-          challenge,
-          instructions: {
-            dns: challenge.dns,
-            file: challenge.file,
-            meta: challenge.meta,
-          },
-          is_user_error: true,
-        },
-        403
-      );
-    }
-
-    // 3. Record Audit Attestation on the server
+    // 2. Record Audit Attestation on the server
     const attestation = recordAttestation({
       domain: hostname,
       userId: body.user_id || pseudonymise(ip),
@@ -93,10 +63,10 @@ export async function POST(req: NextRequest) {
       userAgent: req.headers.get("user-agent") || "",
     });
 
-    // 4. SSRF Gate
+    // 3. SSRF Gate
     const addrs = await resolvePublic(hostname);
 
-    // 5. Run Active Deep Probing
+    // 4. Run Active Deep Probing
     const deepResult = await runDeepChecks(fullUrl, hostname, "");
     const findings: Finding[] = deepResult.findings.map((f) => ({
       ...f,
@@ -125,8 +95,6 @@ export async function POST(req: NextRequest) {
       target: hostname,
       full_url: fullUrl,
       scan_tier: "deep",
-      verified: true,
-      verification_method: own.method,
       attestation_id: attestation.id,
       total_findings: findings.length,
       critical_count: findings.filter((f) => f.severity === "Critical").length,
@@ -143,8 +111,6 @@ export async function POST(req: NextRequest) {
       tier: "deep",
       target: hostname,
       full_url: fullUrl,
-      verified: true,
-      verification_method: own.method,
       attestation_id: attestation.id,
       findings,
       scan_summary: scanSummary,
