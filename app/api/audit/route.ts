@@ -111,6 +111,16 @@ export interface DnsEmailInfo {
 
 export type Tier = "basic" | "deep";
 
+export interface ScanCheckResult {
+  id: string;
+  name: string;
+  description: string;
+  status: "PASS" | "FAIL" | "NOT_RUN";
+  alert_count: number;
+  evidence: string[];
+  plugin_ids: string[];
+}
+
 export interface AuditReport {
   schema_version: string;
   scan_id: string;
@@ -133,6 +143,12 @@ export interface AuditReport {
   manual_checklist: ManualCheck[];
   limitations: string[];
   timestamp: string;
+  engine?: string;
+  zap_version?: string;
+  checks_run?: number;
+  checks_total?: number;
+  check_results?: ScanCheckResult[];
+  scanner_rule_ids?: string[];
 }
 
 async function auditNetwork(hostname: string, ip: string, latency: number): Promise<NetworkInfo> {

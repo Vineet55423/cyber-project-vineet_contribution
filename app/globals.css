@@ -2476,6 +2476,85 @@
             line-height: 1.65;
         }
 
+        .plain-report {
+            padding: 1.25rem 1.4rem;
+            border-color: rgba(255,106,0,0.28);
+            background: rgba(255,106,0,0.045);
+        }
+        .plain-report-lede {
+            color: var(--text-primary);
+            font-weight: 700;
+            margin-top: 0.4rem;
+        }
+        .plain-report > p {
+            color: var(--text-secondary);
+            line-height: 1.65;
+            margin: 0.4rem 0 0.9rem;
+        }
+        .plain-report-counts {
+            display: flex;
+            flex-wrap: wrap;
+            gap: 0.5rem;
+            margin: 0.9rem 0;
+        }
+        .plain-report-counts span {
+            border: 1px solid rgba(255,255,255,0.12);
+            border-radius: 999px;
+            color: var(--text-secondary);
+            font-size: 0.78rem;
+            padding: 0.3rem 0.65rem;
+        }
+        .plain-report-counts b {
+            color: var(--text-primary);
+            margin-right: 0.2rem;
+        }
+        .plain-report-list {
+            display: grid;
+            gap: 0.8rem;
+            margin: 0.7rem 0 0;
+            padding-left: 1.3rem;
+        }
+        .plain-report-list li { padding-left: 0.2rem; }
+        .plain-report-list strong,
+        .plain-report-list span,
+        .plain-report-list small { display: block; }
+        .plain-report-list span {
+            color: var(--text-secondary);
+            line-height: 1.55;
+            margin-top: 0.2rem;
+        }
+        .plain-report-list small {
+            color: var(--text-secondary);
+            line-height: 1.5;
+            margin-top: 0.25rem;
+        }
+        .plain-report-more { font-size: 0.82rem; }
+        .plain-check-results { margin-top: 1.2rem; }
+        .plain-check-results > strong { display: block; margin-bottom: 0.55rem; }
+        .plain-check-results ul { display: grid; gap: 0.55rem; list-style: none; margin: 0; padding: 0; }
+        .plain-check-results li { display: grid; gap: 0.22rem; }
+        .plain-check-status {
+            border: 1px solid rgba(255,255,255,0.15);
+            border-radius: 999px;
+            font-size: 0.68rem;
+            font-weight: 800;
+            justify-self: start;
+            padding: 0.15rem 0.5rem;
+            text-transform: uppercase;
+        }
+        .plain-check-status.pass { color: var(--success); }
+        .plain-check-status.fail { color: var(--danger); }
+        .plain-check-status.not_run { color: var(--warning); }
+        .plain-check-results li > span:not(.plain-check-status),
+        .plain-check-results small { color: var(--text-secondary); line-height: 1.5; }
+        .technical-json-details { margin: 0.8rem 0; }
+        .technical-json-details > summary {
+            color: var(--text-secondary);
+            cursor: pointer;
+            font-size: 0.85rem;
+            padding: 0.5rem 0;
+        }
+
         /* ── SARIF Export Button ── */
         .action-btn.sarif {
             border-color: rgba(129,140,248,0.35);
