@@ -1,0 +1,82 @@
+================================================================================
+          CYBERSHIELD VULNERABILITY SCANNER — 100% OWASP ZAP SPECIFICATION
+================================================================================
+Architecture: 100% Handled through OWASP ZAP (Passive & Active Rules)
+Target Engine: OWASP ZAP (ZAP API via Python index.py + Next.js UI)
+================================================================================
+
+--------------------------------------------------------------------------------
+PART 1: 5 BASIC TESTS (ZAP PASSIVE SCAN — FAST & NON-INTRUSIVE)
+--------------------------------------------------------------------------------
+These tests run via ZAP's passive engine on the proxied traffic (no attack payloads):
+
+1. MISSING SECURITY HEADERS
+   - Inspection Method: ZAP Passive rule, alert name substring match
+   - OWASP Category: A05:2021 - Security Misconfiguration
+   - CWE: CWE-693 (Protection Mechanism Failure), CWE-1021 (Clickjacking), CWE-319
+   - Coverage: Content-Security-Policy (CSP), Strict-Transport-Security (HSTS), 
+     X-Frame-Options, X-Content-Type-Options, Referrer-Policy, Permissions-Policy.
+
+2. COOKIE FLAGS (HYGIENE & SESSION ISOLATION)
+   - Inspection Method: ZAP Passive rule, "Cookie" alert match
+   - OWASP Category: A07:2021 - Identification and Authentication Failures
+   - CWE: CWE-614 (Missing Secure Flag), CWE-1004 (Missing HttpOnly Flag), CWE-1275 (Missing SameSite)
+   - Coverage: Checks Set-Cookie headers for Secure, HttpOnly, and SameSite (Strict/Lax).
+
+3. VULNERABLE JAVASCRIPT LIBRARIES
+   - Inspection Method: ZAP Passive rule ("Vulnerable JS Library" / Retire.js add-on)
+   - OWASP Category: A06:2021 - Vulnerable and Outdated Components
+   - CWE: CWE-1104 (Use of Unmaintained Third-Party Components)
+   - Coverage: Detects outdated, vulnerable third-party JavaScript dependencies.
+
+4. SERVER / VERSION INFORMATION DISCLOSURE
+   - Inspection Method: ZAP Passive rule (Server Leaks, X-Powered-By, X-AspNet-Version)
+   - OWASP Category: A05:2021 - Security Misconfiguration
+   - CWE: CWE-200 (Exposure of Sensitive Information to an Unauthorized Actor)
+   - Coverage: Detects leaky Server, X-Powered-By, X-AspNet-Version, and framework banners.
+
+5. DIRECTORY BROWSING EXPOSED
+   - Inspection Method: ZAP Passive rule (Directory Browsing / Index of)
+   - OWASP Category: A01:2021 - Broken Access Control / A05:2021 - Security Misconfiguration
+   - CWE: CWE-548 (Exposure of Information Through Directory Listing)
+   - Coverage: Identifies web server directory listings that expose raw folder structures.
+
+
+--------------------------------------------------------------------------------
+PART 2: 5 DEEP TESTS (ZAP ACTIVE SCAN — TARGETED PLUGIN IDS)
+--------------------------------------------------------------------------------
+These tests run via ZAP's active scan engine using specific, high-speed plugin IDs:
+
+1. REFLECTED CROSS-SITE SCRIPTING (XSS)
+   - Plugin ID: 40012
+   - CWE: CWE-79
+   - Release Status: Release (Core)
+   - Coverage: Injects non-destructive test tokens to check if unescaped input reflects in response.
+
+2. SQL INJECTION (SQLi)
+   - Plugin ID: 40018 (Generic SQL Injection)
+   - CWE: CWE-89
+   - Release Status: Release (Core)
+   - Coverage: Injects SQL syntax delimiters to identify unhandled database error responses.
+
+3. OPEN REDIRECT (EXTERNAL REDIRECT)
+   - Plugin ID: 20019
+   - CWE: CWE-601
+   - Release Status: Release (Core)
+   - Coverage: Tests redirect parameters against external destinations to prevent phishing bounces.
+
+4. GIT SOURCE CODE EXPOSURE
+   - Plugin ID: 41
+   - CWE: CWE-541
+   - Release Status: Beta
+   - Coverage: Directly probes target repository metadata to check if .git source files are exposed.
+
+5. CORS MISCONFIGURATION
+   - Plugin ID: 40040
+   - CWE: CWE-942
+   - Release Status: Alpha
+   - Coverage: Injects arbitrary Origin headers to test for permissive cross-origin reflection and credential exposure.
+
+================================================================================
+END OF SPECIFICATION (100% OWASP ZAP NATIVE)
+================================================================================

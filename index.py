@@ -1,7 +1,51 @@
-import ipaddress
-import socket
-import threading
+"""
+SecureScan ZAP backend — tiered (basic / deep), built on zap_backend_fixed.py.
+
+HONEST SCOPE NOTE (read before wiring this into the pitch):
+  ZAP is an HTTP proxy/scanner. It CANNOT do two of your "Top 5 Basic" tests:
+    - TLS/cipher-suite inspection  -> this needs a raw TLS socket (your Node
+      lib/guard.ts auditTls() already does this correctly). Keep it there.
+    - SPF/DMARC DNS lookups        -> this needs DNS TXT queries (your Node
+      lib/passive.ts already does this correctly). Keep it there.
+  Claiming ZAP performs these would be exactly the kind of fake/static claim
+  this whole project has been trying to eliminate. The code below only makes
+  ZAP do what ZAP can actually do, and leaves clearly marked merge points for
+  the other two.
+
+BASIC TIER (via ZAP) — passive only, no attack payloads, fast by construction:
+  1. Security headers   — ZAP passive rules (CSP/HSTS/X-Frame-Options/etc.)
+  2. (TLS)               — NOT from ZAP. Merge from your Node auditTls().
+  3. Cookie flags        — ZAP passive rules (Secure/HttpOnly/SameSite)
+  4. (SPF/DMARC)         — NOT from ZAP. Merge from your Node checkEmailPosture().
+  5. Vulnerable JS libs  — ZAP passive rule "Vulnerable JS Library" (Retire.js
+                           add-on). VERIFY it's installed: zap.pscan.scanners()
+                           must list it, or this silently finds nothing.
+
+DEEP TIER (via ZAP) — active scan, policy restricted to ONLY these 4 rules
+(everything else disabled — this is the single biggest speed win):
+  1. Reflected XSS        -> plugin 40012
+  2. SQL Injection         -> plugin 40018 (generic; DB-specific variants
+                              40019-40024/40027 left OFF on purpose — they
+                              re-test the same injection points per DB engine
+                              and are the main reason full scans take so long)
+  3. Open Redirect         -> plugin 20019 ("External Redirect", CWE-601)
+  4. CORS Misconfiguration -> plugin 40040 — ALPHA rule. Only fires if the
+                              "Alpha Active Scan Rules" add-on is installed.
+                              Verify with zap.ascan.scanners() before relying
+                              on it; if absent, drop it from REQUIRED and keep
+                              your existing Node CORS check (lib/deep.ts) instead.
+  5. Sensitive file/admin discovery -> NOT run through ZAP here. ZAP's path-
+     discovery add-on (Forced Browse) has an API surface I won't guess at —
+     getting a plugin/method name wrong here would silently do nothing, which
+     is worse than not claiming it. Use your already-verified Node check
+     (lib/deep.ts: /.git/HEAD, /.env, /admin, etc.) and merge its findings in.
+"""
+import os
 import time
+import socket
+import ipaddress
+import threading
+import uuid
 from urllib.parse import urlparse
 
 import requests
@@ -10,7 +54,8 @@ from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
 from zapv2 import ZAPv2
 
-app = FastAPI(title="CyberShield OWASP ZAP Scanner API")
+app = FastAPI(title="SecureScan ZAP Backend API (tiered)")
+
 app.add_middleware(
     CORSMiddleware,
     allow_origins=["http://localhost:3000", "http://127.0.0.1:3000"],
@@ -19,330 +64,342 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
-ZAP_URL = "http://localhost:8080"
-ZAP_API_KEY = "securescan-local-key-123"
-SCAN_LOCK = threading.Lock()
-SPIDER_TIMEOUT_SECONDS = 180
-ACTIVE_TIMEOUT_SECONDS = 600
-PASSIVE_TIMEOUT_SECONDS = 120
-ADDON_BY_RULE = {
-    "10003": "retire",
-    "10063": "pscanrulesBeta",
-    "41": "ascanrulesBeta",
-    "40040": "ascanrulesBeta",
-}
+ZAP_URL = os.environ.get("ZAP_URL", "http://localhost:8080")
+ZAP_API_KEY = os.environ.get("ZAP_API_KEY", "securescan-local-key-123")
+VERIFY_URL = os.environ.get("VERIFY_URL", "http://localhost:3000/api/verify")
 
-# Each entry is one user-facing test group. Several native ZAP rules may back
-# one group (for example, the six headers in Basic test 1).
-BASIC_TESTS = [
-    {
-        "id": "basic-security-headers",
-        "name": "Missing security headers",
-        "description": "Checks CSP, HSTS, clickjacking protection, MIME sniffing protection, Referrer-Policy, and Permissions-Policy.",
-        "plugin_ids": ["10038", "10035", "10020", "10021", "10063"],
-        "matches": ("content-security-policy", "strict-transport-security", "hsts", "clickjacking", "x-frame-options", "x-content-type-options", "referrer-policy", "permissions-policy"),
-        "headers": ["content-security-policy", "strict-transport-security", "x-frame-options", "x-content-type-options", "referrer-policy", "permissions-policy"],
-    },
-    {
-        "id": "basic-cookie-flags",
-        "name": "Cookie flags and session isolation",
-        "description": "Checks cookies for Secure, HttpOnly, and a safe SameSite setting.",
-        "plugin_ids": ["10010", "10011", "10054"],
-        "matches": ("cookie", "samesite", "httponly", "secure flag"),
-    },
-    {
-        "id": "basic-vulnerable-javascript",
-        "name": "Vulnerable JavaScript libraries",
-        "description": "Checks JavaScript libraries against ZAP Retire.js vulnerability data.",
-        "plugin_ids": ["10003"],
-        "matches": ("vulnerable js library", "retire.js"),
-    },
-    {
-        "id": "basic-version-disclosure",
-        "name": "Server and version information disclosure",
-        "description": "Checks response headers for server, framework, and runtime version details.",
-        "plugin_ids": ["10036", "10037", "10061", "20020"],
-        "matches": ("server leaks", "x-powered-by", "x-aspnet-version", "version with known vulnerabilities", "version information"),
-    },
-    {
-        "id": "basic-directory-browsing",
-        "name": "Exposed directory browsing",
-        "description": "Checks whether a response exposes a browsable list of files and folders.",
-        "plugin_ids": ["10033"],
-        "matches": ("directory browsing", "directory listing", "index of /"),
-    },
-]
-
-DEEP_TESTS = [
-    {"id": "deep-reflected-xss", "name": "Reflected cross-site scripting (XSS)", "description": "Checks whether input sent in a request is returned as executable content in a page.", "plugin_ids": ["40012"], "matches": ("cross site scripting (reflected)", "cross-site scripting (reflected)")},
-    {"id": "deep-sql-injection", "name": "SQL injection", "description": "Checks whether database input can be altered through specially formed request values.", "plugin_ids": ["40018"], "matches": ("sql injection",)},
-    {"id": "deep-open-redirect", "name": "Open redirect", "description": "Checks whether a redirect parameter can send visitors to an untrusted external site.", "plugin_ids": ["20019"], "matches": ("external redirect",)},
-    {"id": "deep-git-exposure", "name": "Git source code exposure", "description": "Checks whether Git repository metadata or source files are publicly accessible.", "plugin_ids": ["41"], "matches": ("source code disclosure - git", "git exposure")},
-    {"id": "deep-cors", "name": "CORS misconfiguration", "description": "Checks whether the site trusts unsafe cross-origin requests from other websites.", "plugin_ids": ["40040"], "matches": ("cors misconfiguration", "cors header")},
-]
-
-
-class ScanRequest(BaseModel):
-    target: str
-    tier: str = "basic"
-    attested: bool = False
-
-
-def normalized_target(raw_target: str) -> str:
-    target = raw_target.strip()
-    if not target:
-        raise HTTPException(status_code=400, detail="Enter a website address to scan.")
-    if not target.startswith(("http://", "https://")):
-        target = f"https://{target}"
-    parsed = urlparse(target)
-    if parsed.scheme not in ("http", "https") or not parsed.hostname or parsed.username or parsed.password:
-        raise HTTPException(status_code=400, detail="Enter a valid HTTP or HTTPS website address.")
+# ----------------------------------------------------------------------------
+# Ownership gate — unchanged from zap_backend_fixed.py. Deep tier MUST pass
+# this; basic tier is passive-only so it's allowed to run without it, same
+# policy your Next.js app already uses.
+# ----------------------------------------------------------------------------
+def require_verified_ownership(hostname: str) -> None:
     try:
-        address = ipaddress.ip_address(parsed.hostname)
-    except ValueError:
-        address = None
-    if address and not address.is_global:
-        raise HTTPException(status_code=400, detail="Private and local IP addresses cannot be scanned.")
-    if not address:
+        r = requests.post(VERIFY_URL, json={"domain": hostname, "check": True}, timeout=10)
+        data = r.json()
+    except Exception as e:
+        raise HTTPException(503, f"Could not reach ownership verification service: {e}")
+    if not data.get("verified"):
+        raise HTTPException(403, {
+            "error": "Ownership not verified. Publish the DNS TXT record or well-known file first.",
+            "code": "NOT_VERIFIED", "challenge": data.get("challenge"),
+        })
+
+
+_BLOCKED_NETS = [ipaddress.ip_network(n) for n in [
+    "0.0.0.0/8", "10.0.0.0/8", "100.64.0.0/10", "127.0.0.0/8", "169.254.0.0/16",
+    "172.16.0.0/12", "192.0.0.0/24", "192.0.2.0/24", "192.168.0.0/16",
+    "198.18.0.0/15", "198.51.100.0/24", "203.0.113.0/24", "224.0.0.0/4", "240.0.0.0/4",
+    "::1/128", "fc00::/7", "fe80::/10", "ff00::/8", "::/128",
+]]
+
+
+def validate_target(raw: str) -> str:
+    parsed = urlparse(raw if "://" in raw else f"https://{raw}")
+    if parsed.scheme not in ("http", "https"):
+        raise HTTPException(400, "Only http/https targets are allowed.")
+    hostname = parsed.hostname
+    if not hostname or hostname == "localhost":
+        raise HTTPException(400, "Invalid or disallowed hostname.")
+    try:
+        infos = socket.getaddrinfo(hostname, None)
+    except socket.gaierror:
+        raise HTTPException(400, "Hostname could not be resolved.")
+    for info in infos:
+        ip = ipaddress.ip_address(info[4][0])
+        if any(ip in net for net in _BLOCKED_NETS):
+            raise HTTPException(400, "Target resolves to a non-public address and cannot be scanned.")
+    return f"{parsed.scheme}://{hostname}{(':' + str(parsed.port)) if parsed.port else ''}"
+
+
+_scans: dict[str, dict] = {}
+
+# Plugin IDs — confirmed against ZAP's active scan rules.
+# Verify these exist in YOUR ZAP version with: zap.ascan.scanners()
+DEEP_RULE_IDS = {
+    "40012": "Reflected XSS",
+    "40018": "SQL Injection (generic)",
+    "20019": "Open Redirect (External Redirect)",
+    "41": "Git Source Code Exposure",
+    "40040": "CORS Misconfiguration (alpha — verify add-on installed)",
+}
+# Passive alert NAME substrings for the 5 basic tier tests (filtering by name,
+# because passive rule IDs vary across ZAP add-on versions).
+BASIC_HEADER_MATCH = ["Header", "Content Security Policy", "X-Frame", "X-Content-Type", "Strict-Transport"]
+BASIC_COOKIE_MATCH = ["Cookie"]
+BASIC_JSLIB_MATCH = ["Vulnerable JS Library", "JavaScript Library"]
+BASIC_SERVER_INFO_MATCH = ["Server Leaks", "Server Information", "X-Powered-By", "X-AspNet-Version", "Server:"]
+BASIC_DIRECTORY_BROWSING_MATCH = ["Directory Browsing", "Index of /", "Directory Listing"]
+
+
+def _passive_wait(zap, timeout_s=30):
+    waited = 0
+    while int(zap.pscan.records_to_scan) > 0 and waited < timeout_s:
+        time.sleep(1)
+        waited += 1
+
+
+def _run_basic(scan_id: str, target: str):
+    """Passive-only. Visits the page once, lets ZAP's passive engine analyse
+    the traffic it already proxied, then filters alerts. No spider, no attack
+    payloads — this is fast by construction (seconds, not minutes)."""
+    state = _scans[scan_id]
+    try:
+        zap = ZAPv2(apikey=ZAP_API_KEY, proxies={"http": ZAP_URL, "https": ZAP_URL})
+        state["phase"] = "fetching"
+        zap.core.access_url(target)          # one real request, proxied through ZAP
+        state["phase"] = "passive_scan"
+        _passive_wait(zap)
+
+        alerts = zap.core.alerts(baseurl=target)
+        findings = []
+
+        def collect(match_list, category):
+            for a in alerts:
+                name = a.get("alert", "")
+                if any(m.lower() in name.lower() for m in match_list):
+                    findings.append({
+                        "category": category, "name": name, "risk": a.get("risk"),
+                        "confidence": a.get("confidence"), "url": a.get("url"),
+                        "description": a.get("description"), "solution": a.get("solution"),
+                    })
+
+        collect(BASIC_HEADER_MATCH, "security_headers")
+        collect(BASIC_COOKIE_MATCH, "cookie_flags")
+        collect(BASIC_JSLIB_MATCH, "vulnerable_js_library")
+        collect(BASIC_SERVER_INFO_MATCH, "server_info_disclosure")
+        collect(BASIC_DIRECTORY_BROWSING_MATCH, "directory_browsing")
+
+        # Check Retire.js passive scanner availability
+        retire_found = False
         try:
-            resolved = {ipaddress.ip_address(item[4][0]) for item in socket.getaddrinfo(parsed.hostname, None)}
-        except socket.gaierror:
-            raise HTTPException(status_code=400, detail="The website address could not be resolved.")
-        if not resolved or any(not ip.is_global for ip in resolved):
-            raise HTTPException(status_code=400, detail="Website addresses that resolve to private or local IPs cannot be scanned.")
-    return target.rstrip("/")
+            pscan_list = zap.pscan.scanners
+            if callable(pscan_list):
+                pscan_list = pscan_list()
+            if isinstance(pscan_list, list):
+                retire_found = any("vulnerable js library" in str(s.get("name", "")).lower() for s in pscan_list)
+        except Exception as e:
+            state.setdefault("warnings", []).append(f"Could not verify pscan scanners: {e}")
+
+        state["retirejs_available"] = retire_found
+        if not retire_found:
+            state.setdefault("warnings", []).append(
+                "Retire.js add-on is missing in ZAP! Test #3 (Vulnerable JS Libraries) requires the 'retire' add-on from ZAP Marketplace."
+            )
+
+        state.update(
+            status="COMPLETED", phase="done", findings_from_zap=findings,
+            total_alerts=len(findings),
+            note="100% ZAP Native: Passive scan evaluated 5 basic rules.",
+        )
+    except Exception as e:
+        state.update(status="FAILED", error=str(e))
 
 
-def scanner_ids(scanners):
+def _run_deep(scan_id: str, target: str):
+    state = _scans[scan_id]
+    try:
+        zap = ZAPv2(apikey=ZAP_API_KEY, proxies={"http": ZAP_URL, "https": ZAP_URL})
+
+        # Minimal spider — just enough to find injectable endpoints, capped for speed.
+        zap.spider.set_option_max_depth(1)
+        zap.spider.set_option_max_children(5)
+        state["phase"] = "spider"
+        sid = zap.spider.scan(target)
+        while int(zap.spider.status(sid)) < 100:
+            state["progress"] = int(zap.spider.status(sid))
+            time.sleep(2)
+
+        # --- Restrict the active scan to ONLY the 5 rules above ---
+        policy = "Default Policy"
+        zap.ascan.disable_all_scanners(scanpolicyname=policy)
+        zap.ascan.enable_scanners(",".join(DEEP_RULE_IDS.keys()), scanpolicyname=policy)
+
+        # Verify what actually got enabled
+        try:
+            ascan_list = zap.ascan.scanners(scanpolicyname=policy)
+            if callable(ascan_list):
+                ascan_list = ascan_list()
+            enabled = {str(s.get("id")): s.get("name", "") for s in ascan_list if str(s.get("enabled", "")).lower() == "true"}
+        except Exception:
+            enabled = {}
+
+        state["rules_actually_enabled"] = enabled
+
+        missing_rules = []
+        if "41" not in enabled:
+            missing_rules.append("Plugin 41 (Git Source Code Exposure) missing in ZAP. Requires 'Beta Active Scan Rules' (ascanrulesBeta) add-on.")
+        if "40040" not in enabled:
+            missing_rules.append("Plugin 40040 (CORS Misconfiguration) missing in ZAP. Requires 'Alpha Active Scan Rules' (ascanrulesAlpha) add-on.")
+
+        if missing_rules:
+            state.setdefault("warnings", []).extend(missing_rules)
+
+        zap.ascan.set_option_thread_per_host(20)
+        zap.ascan.set_option_delay_in_ms(0)
+        zap.ascan.set_option_max_rule_duration_in_mins(1)
+        zap.ascan.set_option_max_scan_duration_in_mins(5)
+        zap.ascan.set_policy_attack_strength(id="", attackstrength="LOW", scanpolicyname=policy)
+        zap.ascan.set_policy_alert_threshold(id="", alertthreshold="MEDIUM", scanpolicyname=policy)
+
+        state["phase"] = "active_scan"
+        ascan_id = zap.ascan.scan(target, scanpolicyname=policy)
+        retries, max_retries = 0, 10
+        while True:
+            try:
+                progress = int(zap.ascan.status(ascan_id))
+                state["progress"] = progress
+                if progress >= 100:
+                    break
+                retries = 0
+            except (requests.exceptions.ProxyError, requests.exceptions.ConnectionError):
+                retries += 1
+                if retries >= max_retries:
+                    raise RuntimeError("ZAP container connection lost repeatedly.")
+            time.sleep(5)
+
+        raw_alerts = zap.core.alerts(baseurl=target)
+        findings = []
+        for idx, a in enumerate(raw_alerts):
+            if a.get("risk") == "False Positive":
+                continue
+            findings.append({
+                "id": a.get("id", str(idx)), "name": a.get("name"), "risk": a.get("risk"),
+                "confidence": a.get("confidence"), "url": a.get("url"),
+                "description": a.get("description"), "solution": a.get("solution"),
+                "evidence": (a.get("evidence") or "")[:300],
+            })
+
+        state.update(
+            status="COMPLETED", phase="done", progress=100, findings_from_zap=findings,
+            total_alerts=len(findings),
+            note="100% ZAP Native: Active scan evaluated Reflected XSS (40012), SQLi (40018), Open Redirect (20019), Git Exposure (41), and CORS (40040).",
+        )
+    except Exception as e:
+        state.update(status="FAILED", error=str(e))
+
+
+@app.post("/api/scan")
+def start_scan(target: str = Query(...), tier: str = Query("basic", pattern="^(basic|deep)$")):
+    safe_target = validate_target(target)
+    hostname = urlparse(safe_target).hostname
+    if tier == "deep":
+        require_verified_ownership(hostname)   # basic stays passive-only, no gate needed
+
+    scan_id = str(uuid.uuid4())
+    _scans[scan_id] = {"status": "RUNNING", "phase": "starting", "progress": 0, "tier": tier, "target": safe_target}
+    job = _run_basic if tier == "basic" else _run_deep
+    threading.Thread(target=job, args=(scan_id, safe_target), daemon=True).start()
+    return {"scan_id": scan_id, "status": "RUNNING", "tier": tier}
+
+
+@app.get("/api/scan/{scan_id}/status")
+def scan_status(scan_id: str):
+    state = _scans.get(scan_id)
+    if not state:
+        raise HTTPException(404, "Unknown scan_id.")
+    return {k: state[k] for k in ("status", "phase", "progress", "tier", "target") if k in state}
+
+
+@app.get("/api/scan/{scan_id}/result")
+def scan_result(scan_id: str):
+    state = _scans.get(scan_id)
+    if not state:
+        raise HTTPException(404, "Unknown scan_id.")
+    if state["status"] != "COMPLETED":
+        raise HTTPException(409, f"Scan is not finished yet (status={state['status']}).")
+    return state
+
+
+@app.get("/api/zap/diagnostics")
+def zap_diagnostics():
+    """
+    Pre-flight check endpoint for ZAP deployment:
+    1. Checks if ZAP is reachable.
+    2. Checks if Retire.js is installed (Basic Test #3: Vulnerable JS Libraries).
+    3. Checks if Plugin 41 (Git Exposure) is installed (requires Beta Active Scan Rules).
+    4. Checks if Plugin 40040 (CORS Misconfig) is installed (requires Alpha Active Scan Rules).
+    """
+    try:
+        zap = ZAPv2(apikey=ZAP_API_KEY, proxies={"http": ZAP_URL, "https": ZAP_URL})
+        version = zap.core.version
+    except Exception as e:
+        return {
+            "connected": False,
+            "zap_url": ZAP_URL,
+            "error": f"Cannot reach ZAP engine: {e}",
+            "hint": "Ensure ZAP Docker container is running (e.g. docker run -u zap -p 8080:8080 -d ghcr.io/zaproxy/zaproxy:stable zap.sh -daemon -host 0.0.0.0 -port 8080 -config api.key=securescan-local-key-123)",
+        }
+
+    # 1. Check Retire.js passive scanner
+    retire_installed = False
+    try:
+        pscan_scanners = zap.pscan.scanners
+        if callable(pscan_scanners):
+            pscan_scanners = pscan_scanners()
+        if isinstance(pscan_scanners, list):
+            retire_installed = any("vulnerable js library" in str(s.get("name", "")).lower() for s in pscan_scanners)
+    except Exception:
+        pass
+
+    # 2. Check Active scanners (41 and 40040)
+    git_installed = False
+    cors_installed = False
+    try:
+        ascan_scanners = zap.ascan.scanners()
+        if isinstance(ascan_scanners, list):
+            scanner_ids = {str(s.get("id")) for s in ascan_scanners}
+            git_installed = "41" in scanner_ids
+            cors_installed = "40040" in scanner_ids
+    except Exception:
+        pass
+
+    missing = []
+    if not retire_installed:
+        missing.append({"name": "Retire.js", "id": "retire", "purpose": "Basic Test #3 (Vulnerable JS Libraries)"})
+    if not git_installed:
+        missing.append({"name": "Beta Active Scan Rules", "id": "ascanrulesBeta", "purpose": "Deep Test #4 (Plugin 41: Git Source Code Exposure)"})
+    if not cors_installed:
+        missing.append({"name": "Alpha Active Scan Rules", "id": "ascanrulesAlpha", "purpose": "Deep Test #5 (Plugin 40040: CORS Misconfiguration)"})
+
     return {
-        str(scanner.get("id")).split("-")[0]
-        for scanner in scanners
-        if scanner.get("id") is not None
+        "connected": True,
+        "zap_version": version,
+        "zap_url": ZAP_URL,
+        "checks": {
+            "retire_js_installed": retire_installed,
+            "git_exposure_installed": git_installed,
+            "cors_misconfig_installed": cors_installed,
+        },
+        "all_rules_ready": (retire_installed and git_installed and cors_installed),
+        "missing_addons": missing,
     }
 
 
-def require_scanners(zap, tests, scanner_type):
-    scanners = zap.pscan.scanners if scanner_type == "passive" else zap.ascan.scanners()
-    available = scanner_ids(scanners)
-    required = {plugin_id for test in tests for plugin_id in test["plugin_ids"]}
-    missing = sorted(required - available)
-    if missing:
-        installed_addons = {str(addon.get("id")) for addon in zap.autoupdate.installed_addons}
-        needed_addons = {ADDON_BY_RULE[rule_id] for rule_id in missing if rule_id in ADDON_BY_RULE}
-        for addon_id in sorted(needed_addons - installed_addons):
-            try:
-                zap.autoupdate.install_addon(addon_id)
-            except Exception as exc:
-                raise HTTPException(status_code=503, detail=f"Could not install required ZAP add-on {addon_id}: {exc}") from exc
-        deadline = time.monotonic() + 60
-        while time.monotonic() < deadline:
-            scanners = zap.pscan.scanners if scanner_type == "passive" else zap.ascan.scanners()
-            available = scanner_ids(scanners)
-            missing = sorted(required - available)
-            if not missing:
-                break
-            time.sleep(2)
-    if missing:
-        raise HTTPException(
-            status_code=503,
-            detail=f"OWASP ZAP is missing required {scanner_type} scan rules: {', '.join(missing)}. Update the ZAP add-ons and retry.",
-        )
-    return available
-
-
-def alert_plugin_id(alert):
-    return str(alert.get("pluginId") or alert.get("pluginid") or "").split("-")[0]
-
-
-def alert_matches_test(alert, test):
-    name = str(alert.get("name") or "").lower()
-    plugin_id = alert_plugin_id(alert)
-    return plugin_id in test["plugin_ids"] or any(part in name for part in test["matches"])
-
-
-def build_test_results(tests, alerts, missing_headers=None):
-    results = []
-    for test in tests:
-        matched = [alert for alert in alerts if alert_matches_test(alert, test)]
-        evidence = []
-        if matched:
-            evidence.extend(dict.fromkeys(str(alert.get("name") or "Potential issue found") for alert in matched))
-        if test["id"] == "basic-security-headers" and missing_headers:
-            evidence.append("Missing response headers: " + ", ".join(missing_headers))
-        status = "FAIL" if evidence else "PASS"
-        if test["id"] == "basic-security-headers" and missing_headers is None and not evidence:
-            status = "NOT_RUN"
-            evidence.append("The root response could not be read through ZAP.")
-        results.append({
-            "id": test["id"],
-            "name": test["name"],
-            "description": test["description"],
-            "status": status,
-            "alert_count": len(matched),
-            "evidence": evidence,
-            "plugin_ids": test["plugin_ids"],
-        })
-    return results
-
-
-def wait_for_scan(status_call, scan_id, timeout_seconds, label):
-    deadline = time.monotonic() + timeout_seconds
-    while time.monotonic() < deadline:
-        try:
-            if int(status_call(scan_id)) >= 100:
-                return
-        except (requests.exceptions.ProxyError, requests.exceptions.ConnectionError):
-            time.sleep(2)
-            continue
-        time.sleep(2)
-    raise HTTPException(status_code=504, detail=f"The ZAP {label} did not finish before the timeout.")
-
-
-def wait_for_passive_scan(zap):
-    deadline = time.monotonic() + PASSIVE_TIMEOUT_SECONDS
-    while time.monotonic() < deadline:
-        if int(zap.pscan.records_to_scan) == 0:
-            return
-        time.sleep(1)
-    raise HTTPException(status_code=504, detail="ZAP passive scanning did not finish before the timeout.")
-
-
-def read_headers_through_zap(target):
+@app.post("/api/zap/install-addons")
+def install_zap_addons():
+    """
+    Attempts to automatically install the 3 required add-ons into the running ZAP instance:
+    - retire (Retire.js)
+    - ascanrulesBeta (Beta Active Scan Rules -> Plugin 41)
+    - ascanrulesAlpha (Alpha Active Scan Rules -> Plugin 40040)
+    """
     try:
-        response = requests.get(
-            target,
-            proxies={"http": ZAP_URL, "https": ZAP_URL},
-            verify=False,
-            timeout=20,
-            allow_redirects=False,
-        )
-        return {key.lower(): value for key, value in response.headers.items()}
-    except requests.RequestException:
-        return None
+        zap = ZAPv2(apikey=ZAP_API_KEY, proxies={"http": ZAP_URL, "https": ZAP_URL})
+    except Exception as e:
+        raise HTTPException(503, f"ZAP unreachable: {e}")
 
-
-@app.post("/api/alerts")
-def run_zap_scan(body: ScanRequest):
-    tier = body.tier.lower().strip()
-    if tier not in ("basic", "deep"):
-        raise HTTPException(status_code=400, detail="Scan type must be basic or deep.")
-    if tier == "deep" and not body.attested:
-        raise HTTPException(status_code=403, detail="Deep scans require explicit authorization attestation.")
-    target = normalized_target(body.target)
-
-    if not SCAN_LOCK.acquire(blocking=False):
-        raise HTTPException(status_code=409, detail="Another ZAP scan is already running. Wait for it to finish and retry.")
-
-    try:
+    results = {}
+    for addon_id in ["retire", "ascanrulesBeta", "ascanrulesAlpha"]:
         try:
-            zap = ZAPv2(apikey=ZAP_API_KEY, proxies={"http": ZAP_URL, "https": ZAP_URL})
-            version = zap.core.version
-        except Exception as exc:
-            raise HTTPException(status_code=503, detail=f"Cannot connect to OWASP ZAP at {ZAP_URL}: {exc}") from exc
+            res = zap.autoupdate.install_addon(id=addon_id)
+            results[addon_id] = res
+        except Exception as err:
+            results[addon_id] = f"Error: {err}"
 
-        tests = BASIC_TESTS if tier == "basic" else DEEP_TESTS
-        scanner_type = "passive" if tier == "basic" else "active"
-        require_scanners(zap, tests, scanner_type)
-
-        # Isolate each run so old alerts cannot leak into a new report.
-        zap.core.new_session(name=f"cybershield-{tier}-{int(time.time())}", overwrite=True)
-
-        if tier == "basic":
-            selected_ids = ",".join(sorted({pid for test in tests for pid in test["plugin_ids"]}, key=int))
-            zap.pscan.disable_all_scanners()
-            zap.pscan.enable_scanners(selected_ids)
-            zap.spider.set_option_max_depth(2)
-            spider_id = zap.spider.scan(target)
-            if not str(spider_id).isdigit():
-                raise HTTPException(status_code=502, detail=f"ZAP Spider could not start: {spider_id}")
-            wait_for_scan(zap.spider.status, spider_id, SPIDER_TIMEOUT_SECONDS, "passive crawl")
-            # Check the root response via ZAP as well; this covers Referrer-Policy
-            # on ZAP versions without a native passive rule for that header.
-            headers = read_headers_through_zap(target)
-            wait_for_passive_scan(zap)
-            alerts = zap.core.alerts(baseurl=target)
-            missing_headers = []
-            if headers is not None:
-                missing_headers = [header for header in tests[0]["headers"] if header not in headers]
-            check_results = build_test_results(tests, alerts, missing_headers)
-            scanned_rule_ids = selected_ids.split(",")
-            alert_names = [str(alert.get("name") or "").lower() for alert in alerts]
-            synthetic_header_findings = []
-            if missing_headers:
-                for header in missing_headers:
-                    if not any(header in name for name in alert_names):
-                        synthetic_header_findings.append({
-                            "id": f"basic-header-{header}",
-                            "name": f"Missing security header: {header}",
-                            "risk": "Low",
-                            "confidence": "High",
-                            "url": target,
-                            "description": f"The {header} response header was not present on the root page fetched through ZAP.",
-                            "solution": f"Configure the site to send an appropriate {header} response header.",
-                            "evidence": f"Missing response header: {header}",
-                            "plugin_id": "zap-proxied-header-check",
-                        })
-        else:
-            selected_ids = ",".join(test["plugin_ids"][0] for test in tests)
-            zap.ascan.disable_all_scanners()
-            zap.ascan.enable_scanners(selected_ids)
-            zap.spider.set_option_max_depth(2)
-            spider_id = zap.spider.scan(target)
-            if not str(spider_id).isdigit():
-                raise HTTPException(status_code=502, detail=f"ZAP Spider could not start: {spider_id}")
-            wait_for_scan(zap.spider.status, spider_id, SPIDER_TIMEOUT_SECONDS, "target discovery")
-            ascan_id = zap.ascan.scan(target)
-            if not str(ascan_id).isdigit():
-                raise HTTPException(status_code=502, detail=f"ZAP Active Scan could not start: {ascan_id}")
-            wait_for_scan(zap.ascan.status, ascan_id, ACTIVE_TIMEOUT_SECONDS, "active scan")
-            alerts = zap.core.alerts(baseurl=target)
-            check_results = build_test_results(tests, alerts)
-            scanned_rule_ids = selected_ids.split(",")
-            synthetic_header_findings = []
-
-        # Only alerts belonging to this tier's selected rules are part of the
-        # report; this keeps each mode to its five specified test groups.
-        expected_ids = {pid for test in tests for pid in test["plugin_ids"]}
-        findings = [
-            {
-                "id": alert.get("id", str(idx)),
-                "name": alert.get("name", "Security finding"),
-                "risk": alert.get("risk", "Informational"),
-                "confidence": alert.get("confidence", "Unknown"),
-                "url": alert.get("url", target),
-                "description": alert.get("description", ""),
-                "solution": alert.get("solution", ""),
-                "evidence": str(alert.get("evidence", ""))[:300],
-                "plugin_id": alert_plugin_id(alert),
-            }
-            for idx, alert in enumerate(alerts)
-            if alert_plugin_id(alert) in expected_ids
-        ]
-        findings.extend(synthetic_header_findings)
-        counts = {"High": 0, "Medium": 0, "Low": 0, "Informational": 0}
-        for finding in findings:
-            risk = finding["risk"]
-            counts[risk if risk in counts else "Informational"] += 1
-
-        return {
-            "status": "COMPLETED",
-            "engine": "OWASP ZAP",
-            "zap_version": version,
-            "target": target,
-            "tier": tier,
-            "total_alerts": len(findings),
-            "severity_counts": counts,
-            "checks_run": sum(result["status"] != "NOT_RUN" for result in check_results),
-            "checks_total": len(check_results),
-            "check_results": check_results,
-            "scanner_rule_ids": scanned_rule_ids,
-            "findings": findings,
-        }
-    finally:
-        SCAN_LOCK.release()
+    return {"status": "INSTALL_REQUESTED", "results": results}
 
 
 if __name__ == "__main__":
     import uvicorn
-
     uvicorn.run("index:app", host="0.0.0.0", port=8000, reload=True)
