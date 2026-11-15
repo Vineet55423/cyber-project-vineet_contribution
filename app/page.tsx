@@ -2,7 +2,7 @@
 
 import React, { useState, useEffect, useRef, useCallback } from "react";
 import type { AuditReport } from "./api/audit/route";
-import { FindingsPanel } from "./ScanExtras";
+import { explainFinding, FindingsPanel, PlainLanguageSummary } from "./ScanExtras";
 import { formatFriendlyError, type FriendlyError } from "@/lib/errors";
 
 const REMEDIATION_DB: Record<
@@ -161,7 +161,7 @@ export default function CyberShieldPage() {
 
   // Copy Buttons feedback
   const [copyJsonText, setCopyJsonText] = useState("Copy JSON Report");
-  const [copyMdText, setCopyMdText] = useState("Copy Executive Markdown");
+  const [copyMdText, setCopyMdText] = useState("Copy Plain-Language Report");
 
   const inputRef = useRef<HTMLInputElement>(null);
   const terminalEndRef = useRef<HTMLDivElement>(null);
@@ -528,6 +528,61 @@ export default function CyberShieldPage() {
         addLog("ZAP_OFFLINE", "SecureScan ZAP backend (port 8000) not reachable. Full Node telemetry loaded.");
       }
 
+      const high = rawData.severity_counts?.High || 0;
+      const medium = rawData.severity_counts?.Medium || 0;
+      const low = rawData.severity_counts?.Low || 0;
+      const calculatedScore = Math.max(0, 100 - high * 20 - medium * 10 - low * 5);
+      let grade = "A", grade_color = "#10b981";
+      if (calculatedScore < 90) { grade = "B"; grade_color = "#fbbf24"; }
+      if (calculatedScore < 70) { grade = "C"; grade_color = "#f59e0b"; }
+      if (calculatedScore < 50) { grade = "D"; grade_color = "#ea580c"; }
+      if (calculatedScore < 30) { grade = "F"; grade_color = "#ef4444"; }
+      const findings = rawData.findings || [];
+      const deductions = findings.map((finding: any) => finding.name || "Security finding");
+
+      finalData = {
+        target: rawData.target,
+        full_url: rawData.target,
+        timestamp: new Date().toISOString(),
+        score: calculatedScore,
+        grade,
+        grade_color,
+        verdict: deductions.length ? `${deductions.length} ZAP alert(s) need review` : "No alerts from the selected ZAP checks",
+        tier,
+        engine: rawData.engine,
+        zap_version: rawData.zap_version,
+        checks_run: rawData.checks_run,
+        checks_total: rawData.checks_total,
+        check_results: rawData.check_results,
+        scanner_rule_ids: rawData.scanner_rule_ids,
+        network: { ip: "Not measured by ZAP", latency_ms: 0 },
+        http: {
+          infrastructure: "OWASP ZAP",
+          status_code: 0,
+          redirect_secure: false,
+          missing_headers: [],
+          present_headers: {},
+          leakage: [],
+          cookies: [],
+        },
+        tls: {
+          tls_version: "Not measured by these ZAP checks",
+          cipher_suite: "Not measured",
+          issuer_org: "Not measured",
+          cert_expires_in_days: 0,
+          expires_at: "Not measured",
+          sans_count: 0,
+          sans_sample: [],
+          cert_valid: false,
+          protocol_secure: false,
+          fingerprint_sha256: "Not measured",
+        },
+        findings,
+        deductions,
+        limitations: ["A passing ZAP check means no matching alert was found; it is not proof that the site is secure."],
+      };
+      isSuccess = true;
+
       if (isSuccess && finalData) {
         addLog("SUCCESS", `Audit completed in ${Date.now() - startTime}ms. Threat Score: ${finalData.score}/100 [Grade ${finalData.grade}]`);
         setTermStatus("FINISHED");
@@ -582,36 +637,54 @@ export default function CyberShieldPage() {
   const copyMarkdown = () => {
     if (!auditData) return;
     const d = auditData;
-    const md = `# CyberShield Security Audit Report: ${d.target}
-**Timestamp:** ${d.timestamp}
-**Threat Intelligence Score:** ${d.score}/100 (Grade: ${d.grade})
-**Posture Verdict:** ${d.verdict}
+    const findings = (d.findings || []) as any[];
+    const checks = d.check_results || [];
+    const highPriority = findings.filter((f) => ["Critical", "High"].includes(f.severity || f.risk)).length;
+    const findingLines = findings.length
+      ? findings.map((f) => {
+          const title = f.title || f.name || "Security observation";
+          const evidence = f.evidence || f.description || "No additional details were provided by the scanner.";
+          const recommendation = f.remediation || f.solution || "Review this item with your development or security team.";
+          return `### ${f.severity || f.risk || "Informational"}: ${title}\n\n**In plain language:** ${explainFinding(title, f.description || evidence)}\n\n**What the scan saw:** ${evidence}\n\n**Suggested next step:** ${recommendation}`;
+        }).join("\n\n")
+      : "The automated checks did not flag any issues. This does not prove the site is completely secure.";
+    const scanDescription = d.tier === "deep"
+      ? "The scan sent active test requests. Only run this scan against systems you are authorized to test."
+      : "The scan reviewed publicly visible settings and responses without attempting to exploit the site.";
+    const checkLines = checks.length
+      ? checks.map((check) => `- **${check.status === "PASS" ? "No alert" : check.status === "FAIL" ? "Finding" : "Not run"} — ${check.name}:** ${check.description}${check.evidence?.length ? ` Evidence: ${check.evidence.join("; ")}` : ""}`).join("\n")
+      : "No grouped check results were returned by the scanner.";
+    const md = `# Security report for ${d.target}
 
-## Cryptographic Status
-- **TLS Version:** ${d.tls.tls_version}
-- **Cipher Suite:** ${d.tls.cipher_suite}
-- **Certificate Issuer:** ${d.tls.issuer_org}
-- **Cert Expiry:** ${d.tls.cert_expires_in_days} Days Remaining (${d.tls.expires_at})
-- **HTTPS Redirect:** ${d.http.redirect_secure ? "Enforced" : "Missing"}
-- **SHA-256 Fingerprint:** \`${d.tls.fingerprint_sha256}\`
+- **Date:** ${new Date(d.timestamp).toLocaleString()}
+- **Scan type:** ${d.tier === "deep" ? "Deep scan (active checks)" : "Basic scan (passive checks)"}
+- **Overall result:** ${highPriority ? `${highPriority} high-priority ${highPriority === 1 ? "item needs" : "items need"} attention` : findings.length ? `${findings.length} item(s) to review` : "No issues flagged by the automated checks"}
+- **Score:** ${d.score}/100 (${d.grade})
 
-## Missing Security Headers (Vulnerabilities)
-${
-  d.http.missing_headers
-    .map((h: any) => `- [ ] **${h.name}** (${h.severity}): ${h.description}`)
-    .join("\n") || "None - All headers enforced!"
-}
+## What this means
 
-## Enforced Headers
-${Object.keys(d.http.present_headers || {})
-  .map((k) => `- [x] **${k}**: \`${d.http.present_headers[k]}\``)
-  .join("\n")}
+${scanDescription} The score is a summary indicator, not a guarantee that the site is safe. Automated checks can miss issues and some findings need human review.
 
-*Generated by CyberShield Threat Intelligence Platform*`;
+## The five checks in this scan
+
+${checkLines}
+
+## Findings and recommended actions
+
+${findingLines}
+
+## What to do next
+
+1. Address Critical and High findings first.
+2. Ask a developer to verify each finding and apply its suggested fix.
+3. Review any checks marked as needing a person.
+4. Run another scan after making changes.
+
+*Generated by CyberShield*`;
 
     navigator.clipboard.writeText(md);
     setCopyMdText("Copied Markdown!");
-    setTimeout(() => setCopyMdText("Copy Executive Markdown"), 2000);
+    setTimeout(() => setCopyMdText("Copy Plain-Language Report"), 2000);
   };
 
   const openRemediation = (headerName: string) => {
@@ -1173,25 +1246,27 @@ ${Object.keys(d.http.present_headers || {})
                 <h2 id="resTarget">{auditData.target}</h2>
                 <p id="resVerdict" style={{ color: "var(--text-secondary)", fontSize: "0.95rem" }}>
                   {auditData.verdict} —{" "}
-                  {auditData.deductions.length > 0
-                    ? `${auditData.deductions.length} vulnerabilities detected`
-                    : "Zero critical flaws"}
+                  {auditData.engine === "OWASP ZAP"
+                    ? `${auditData.checks_run || 0} of ${auditData.checks_total || 5} check groups returned results`
+                    : auditData.deductions.length > 0
+                      ? `${auditData.deductions.length} vulnerabilities detected`
+                      : "Zero critical flaws"}
                 </p>
                 <div className="target-meta-row">
-                  <span className="meta-pill" id="metaIp">
+                  {auditData.engine !== "OWASP ZAP" && <span className="meta-pill" id="metaIp">
                     <svg fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
                       <circle cx="12" cy="12" r="10" />
                       <line x1="2" y1="12" x2="22" y2="12" />
                       <path d="M12 2a15.3 15.3 0 0 1 4 10 15.3 15.3 0 0 1-4 10 15.3 15.3 0 0 1-4-10 15.3 15.3 0 0 1 4-10z" />
                     </svg>
                     <span id="resIp">{auditData.network.ip}</span>
-                  </span>
-                  <span className="meta-pill" id="metaLatency">
+                  </span>}
+                  {auditData.engine !== "OWASP ZAP" && <span className="meta-pill" id="metaLatency">
                     <svg fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
                       <polygon points="13 2 3 14 12 14 11 22 21 10 12 10 13 2" />
                     </svg>
                     <span id="resLatency">{auditData.network.latency_ms}ms ping</span>
-                  </span>
+                  </span>}
                   <span className="meta-pill" id="metaInfra">
                     <svg fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
                       <path d="M18 10h-1.26A8 8 0 1 0 9 20h9a5 5 0 0 0 0-10z" />
@@ -1226,7 +1301,7 @@ ${Object.keys(d.http.present_headers || {})
                     >
                       {animatedScore}
                     </div>
-                    <div className="gauge-label">Threat Score</div>
+                    <div className="gauge-label">Security Score</div>
                   </div>
                 </div>
 
@@ -1241,6 +1316,16 @@ ${Object.keys(d.http.present_headers || {})
               </div>
             </div>
 
+            <PlainLanguageSummary
+              findings={auditData.findings}
+              checks={auditData.check_results}
+              tier={auditData.tier}
+              target={auditData.target}
+              score={auditData.score}
+            />
+
+            {auditData.engine !== "OWASP ZAP" && (
+              <>
             {/* Fast Metrics Bar */}
             <div className="fast-metrics-bar">
               <div className="ember-card metric-tile">
@@ -1353,6 +1438,9 @@ ${Object.keys(d.http.present_headers || {})
               </div>
             </div>
 
+              </>
+            )}
+
             {/* HTTP Security Headers Matrix */}
             <FindingsPanel
               findings={auditData.findings}
@@ -1361,6 +1449,8 @@ ${Object.keys(d.http.present_headers || {})
               limitations={auditData.limitations}
             />
 
+            {auditData.engine !== "OWASP ZAP" && (
+              <>
             <div className="ember-card audit-card">
               <div className="audit-card-header">
                 <div className="audit-card-title">
@@ -1550,6 +1640,9 @@ ${Object.keys(d.http.present_headers || {})
               </div>
             )}
 
+              </>
+            )}
+
             {/* Threat Intelligence Export Suite */}
             <div className="ember-card audit-card">
               <div className="audit-card-header">
@@ -1561,7 +1654,10 @@ ${Object.keys(d.http.present_headers || {})
                   Threat Intelligence Export Suite
                 </div>
               </div>
-              <pre className="json-terminal" id="rawJsonOutput">{JSON.stringify(auditData, null, 2)}</pre>
+              <details className="technical-json-details">
+                <summary>View technical JSON data</summary>
+                <pre className="json-terminal" id="rawJsonOutput">{JSON.stringify(auditData, null, 2)}</pre>
+              </details>
               <div className="action-btn-row">
                 <button className="action-btn" id="copyJsonBtn" onClick={copyJson}>
                   <svg fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth="2">

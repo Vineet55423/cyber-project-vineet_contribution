@@ -49,8 +49,9 @@ import uuid
 from urllib.parse import urlparse
 
 import requests
-from fastapi import FastAPI, HTTPException, Query
+from fastapi import FastAPI, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
+from pydantic import BaseModel
 from zapv2 import ZAPv2
 
 app = FastAPI(title="SecureScan ZAP Backend API (tiered)")

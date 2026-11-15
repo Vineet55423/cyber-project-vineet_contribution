@@ -60,34 +60,9 @@ npm run dev
 
 Visit [http://localhost:3000](http://localhost:3000) in your web browser.
 
-### 3. Run the Automated Verification Suite
+### 3. Run the Automated Test Suite
 ```bash
-node scripts/verify-all.js
+npm test
 ```
 
----
-
-## 🧪 Automated Verification Suite Results
-
-```text
-═══════════════════════════════════════════════════════
-CYBERSHIELD TEST SUITE: END-TO-END SYSTEM VERIFICATION
-═══════════════════════════════════════════════════════
-
-[PASS] Denylist Protection: google.com is blocked from scanning
-[PASS] SSRF Protection: 127.0.0.1 loopback blocked pre-connection
-[PASS] SSRF Protection: 169.254.169.254 AWS metadata IP blocked
-[PASS] Domain Verification: Issues verification token and multi-method instructions (DNS/File/Meta)
-[PASS] Deep Scan Authorization Gate: Requires an explicit legal authorization attestation
-[PASS] Deep Scan Execution: Generates findings with confidence levels, OWASP/CWE mappings, and manual checklist
-[PASS] Confidence Grading: Every finding has verified confidence levels (confirmed, likely, needs-manual-review)
-[PASS] Human-in-the-Loop: Guided manual checklist generated for business logic, IDOR, and race conditions
-[PASS] Passive Audit: Network, TLS, HTTP, and Security Headers evaluated
-[PASS] DNS & Email Posture: SPF, DMARC, and MX records evaluated
-[PASS] OWASP Top 10 (2021): Compliant classification matrix produced
-[PASS] Web Attack Surface: CORS, SRI, and vulnerable library checks evaluated
-
-═══════════════════════════════════════════════════════
-FINAL RESULT: 12/12 TESTS PASSED (100% COMPLIANCE)
-═══════════════════════════════════════════════════════
-```
+This runs the existing security and verification tests plus exactly five Basic ZAP checks and five Deep ZAP checks. The ten ZAP unit tests verify alert grouping and test configuration; they do not send scan traffic to a target. The live scanner runs only when you start a scan from the website.
