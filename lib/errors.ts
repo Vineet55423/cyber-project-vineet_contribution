@@ -132,7 +132,7 @@ export function formatFriendlyError(
       title: "Legal Attestation Required",
       message:
         "Deep Scan active tests require explicit legal attestation that you own or possess written authorization to perform security testing on this domain.",
-      hint: "Check the 'Legal Attestation & Scope Agreement' box in the verification panel.",
+      hint: "Check the Legal Attestation & Scope Agreement box before starting Deep Scan.",
       code: "ATTESTATION_REQUIRED",
       isUserError: true,
     };
@@ -155,8 +155,8 @@ export function formatFriendlyError(
     return {
       title: "Server Configuration Update in Progress",
       message:
-        "The verification engine is currently running with default configuration and requires its verification key to be initialized.",
-      hint: "Basic passive scans remain available. For deep scanning, ensure CS_VERIFY_SECRET is set in .env.local.",
+        "Domain ownership verification is enabled but its verification key is not configured.",
+      hint: "Deep scans do not require domain ownership verification. Set CS_VERIFY_SECRET only when CS_REQUIRE_VERIFY_BASIC is enabled.",
       code: "CONFIG_ERROR",
       isUserError: false,
     };
