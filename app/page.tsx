@@ -101,7 +101,6 @@ interface UserProfile {
 
 export default function CyberShieldPage() {
   const [theme, setTheme] = useState<"dark" | "light">("dark");
-  const [isAudioMuted, setIsAudioMuted] = useState(false);
   const [targetInput, setTargetInput] = useState("");
   const [tier, setTier] = useState<"basic" | "deep">("basic");
   const [authorizedAttested, setAuthorizedAttested] = useState(false);
@@ -122,7 +121,6 @@ export default function CyberShieldPage() {
     code?: string,
     isUserError = true
   ) => {
-    playSound("error");
     setErrorMsg(message);
     setErrorDetails({ title, message, hint, code, isUserError });
   };
@@ -167,89 +165,14 @@ export default function CyberShieldPage() {
 
   const inputRef = useRef<HTMLInputElement>(null);
   const terminalEndRef = useRef<HTMLDivElement>(null);
-  const audioCtxRef = useRef<AudioContext | null>(null);
   const canvasRef = useRef<HTMLCanvasElement>(null);
   const cursorGlowRef = useRef<HTMLDivElement>(null);
   const cursorDotRef = useRef<HTMLDivElement>(null);
-
-  // Audio Engine
-  const playSound = useCallback(
-    (type: "click" | "scanStart" | "success" | "error") => {
-      if (isAudioMuted) return;
-      try {
-        if (!audioCtxRef.current) {
-          const AudioContextClass =
-            window.AudioContext || (window as any).webkitAudioContext;
-          if (AudioContextClass) audioCtxRef.current = new AudioContextClass();
-        }
-        const ctx = audioCtxRef.current;
-        if (!ctx) return;
-        if (ctx.state === "suspended") ctx.resume();
-
-        const now = ctx.currentTime;
-        if (type === "click") {
-          const osc = ctx.createOscillator();
-          const gain = ctx.createGain();
-          osc.type = "sine";
-          osc.frequency.setValueAtTime(800, now);
-          osc.frequency.exponentialRampToValueAtTime(400, now + 0.04);
-          gain.gain.setValueAtTime(0.04, now);
-          gain.gain.linearRampToValueAtTime(0.001, now + 0.04);
-          osc.connect(gain);
-          gain.connect(ctx.destination);
-          osc.start(now);
-          osc.stop(now + 0.04);
-        } else if (type === "scanStart") {
-          const osc = ctx.createOscillator();
-          const gain = ctx.createGain();
-          osc.type = "triangle";
-          osc.frequency.setValueAtTime(220, now);
-          osc.frequency.exponentialRampToValueAtTime(880, now + 0.18);
-          gain.gain.setValueAtTime(0.05, now);
-          gain.gain.linearRampToValueAtTime(0.001, now + 0.2);
-          osc.connect(gain);
-          gain.connect(ctx.destination);
-          osc.start(now);
-          osc.stop(now + 0.2);
-        } else if (type === "success") {
-          [523.25, 659.25, 783.99].forEach((freq, idx) => {
-            const osc = ctx.createOscillator();
-            const gain = ctx.createGain();
-            osc.type = "sine";
-            osc.frequency.setValueAtTime(freq, now + idx * 0.06);
-            gain.gain.setValueAtTime(0.06, now + idx * 0.06);
-            gain.gain.exponentialRampToValueAtTime(0.001, now + idx * 0.06 + 0.35);
-            osc.connect(gain);
-            gain.connect(ctx.destination);
-            osc.start(now + idx * 0.06);
-            osc.stop(now + idx * 0.06 + 0.35);
-          });
-        } else if (type === "error") {
-          const osc = ctx.createOscillator();
-          const gain = ctx.createGain();
-          osc.type = "sawtooth";
-          osc.frequency.setValueAtTime(180, now);
-          osc.frequency.linearRampToValueAtTime(110, now + 0.22);
-          gain.gain.setValueAtTime(0.08, now);
-          gain.gain.linearRampToValueAtTime(0.001, now + 0.22);
-          osc.connect(gain);
-          gain.connect(ctx.destination);
-          osc.start(now);
-          osc.stop(now + 0.22);
-        }
-      } catch {}
-    },
-    [isAudioMuted]
-  );
-
-  // Initialize theme, audio, and history
+  // Initialize theme and history
   useEffect(() => {
     const savedTheme = (localStorage.getItem("cybershield-theme") as "dark" | "light") || "dark";
     setTheme(savedTheme);
     document.documentElement.setAttribute("data-theme", savedTheme);
-
-    const savedAudio = localStorage.getItem("cybershield-audio-muted") === "true";
-    setIsAudioMuted(savedAudio);
 
     try {
       const savedHistory = JSON.parse(localStorage.getItem("cybershield-history") || "[]");
@@ -258,18 +181,10 @@ export default function CyberShieldPage() {
   }, []);
 
   const toggleTheme = () => {
-    playSound("click");
     const next = theme === "dark" ? "light" : "dark";
     setTheme(next);
     document.documentElement.setAttribute("data-theme", next);
     localStorage.setItem("cybershield-theme", next);
-  };
-
-  const toggleAudio = () => {
-    const next = !isAudioMuted;
-    setIsAudioMuted(next);
-    localStorage.setItem("cybershield-audio-muted", String(next));
-    if (!next) playSound("click");
   };
 
   // Particle Canvas & Cursor
@@ -371,30 +286,6 @@ export default function CyberShieldPage() {
     };
   }, []);
 
-  // Keyboard Shortcuts: Enter, Ctrl+K, H, Escape
-  useEffect(() => {
-    const handleKeyDown = (e: KeyboardEvent) => {
-      if ((e.ctrlKey || e.metaKey) && e.key.toLowerCase() === "k") {
-        e.preventDefault();
-        inputRef.current?.focus();
-      } else if (
-        e.key.toLowerCase() === "h" &&
-        document.activeElement !== inputRef.current &&
-        document.activeElement?.tagName !== "INPUT" &&
-        document.activeElement?.tagName !== "TEXTAREA"
-      ) {
-        e.preventDefault();
-        setIsHistoryOpen((prev) => !prev);
-      } else if (e.key === "Escape") {
-        setAuthModal((p) => ({ ...p, open: false }));
-        setRemedModal((p) => ({ ...p, open: false }));
-        setIsHistoryOpen(false);
-        setIsProfileDropdownOpen(false);
-      }
-    };
-    window.addEventListener("keydown", handleKeyDown);
-    return () => window.removeEventListener("keydown", handleKeyDown);
-  }, []);
 
   // Score counter animation
   useEffect(() => {
@@ -468,8 +359,6 @@ export default function CyberShieldPage() {
       );
       return;
     }
-
-    playSound("scanStart");
     clearError();
     setAuditData(null);
     setIsTerminalVisible(true);
@@ -485,155 +374,163 @@ export default function CyberShieldPage() {
     ]);
 
     const startTime = Date.now();
-    
-    // Switch terminal simulation based on the scan tier
-    const simulatedTelemetry = tier === "deep" 
-      ? [
-          { delay: 1500, tag: "SPIDER", msg: "Crawling and mapping target topology (Max Depth: 2)..." },
-          { delay: 3500, tag: "PASSIVE", msg: "Passive scanning for exposed headers and cookie flags..." },
-          { delay: 6000, tag: "ACTIVE", msg: "Injecting payloads (XSS, SQLi, Info Leakage)..." },
-        ]
-      : [
-          { delay: 180, tag: "SOCKET_TCP", msg: "Connected to remote port 443 with TLS ALPN..." },
-          { delay: 350, tag: "TLS_NEGOTIATE", msg: "Negotiating cipher suite & checking TLS 1.3 compliance..." },
-          { delay: 550, tag: "X509_CHAIN", msg: "Extracting Certificate Authority, validity period & SANs..." },
-          { delay: 750, tag: "HTTP_AUDIT", msg: "Scanning HSTS, CSP, Clickjacking & Referrer headers..." },
-          { delay: 900, tag: "COOKIE_SEC", msg: "Auditing cookie security flags..." },
-        ];
-
-    simulatedTelemetry.forEach((item) => {
-      setTimeout(() => {
-        setTermStatus((currentStatus) => {
-          if (currentStatus === "RUNNING") {
-            addLog(item.tag, item.msg);
-          }
-          return currentStatus;
-        });
-      }, item.delay);
-    });
+    addLog(tier === "deep" ? "ZAP_SCAN" : "AUDIT_START", `Initiating ${tier === "deep" ? "OWASP ZAP active scan" : "security audit"} for ${rawTarget}...`);
 
     try {
       let finalData: any = null;
       let isSuccess = false;
 
-      if (tier === "basic") {
-        // --- EXISTING SIMPLE SCAN (Next.js /api/audit) ---
-        const res = await fetch("/api/audit", {
+      // 1. Fetch Node Baseline Security Audit (handles real TLS socket + SPF/DMARC + Sensitive files)
+      addLog("NODE_TELEMETRY", "Running Node.js TLS handshake, DNS email posture, and sensitive file audit...");
+      const nodeRes = await fetch("/api/audit", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          url: rawTarget,
+          tier,
+          attested: authorizedAttested,
+          user_id: userProfile?.email || undefined,
+        }),
+      });
+      const nodeData = await nodeRes.json();
+      
+      if (!nodeRes.ok || nodeData.error) {
+        const friendly = formatFriendlyError(nodeData.code || "AUDIT_ERROR", nodeData.error || nodeData.friendly_message);
+        showFriendlyError(
+          nodeData.title || friendly.title,
+          nodeData.error || friendly.message,
+          nodeData.hint || friendly.hint,
+          nodeData.code || friendly.code,
+          nodeData.is_user_error !== undefined ? nodeData.is_user_error : friendly.isUserError
+        );
+        addLog("NOTICE", `[${nodeData.code || "NOTICE"}] ${nodeData.error || friendly.message}`);
+        setTermStatus("FAILED");
+        setIsAuditing(false);
+        return;
+      }
+
+      finalData = nodeData;
+      isSuccess = true;
+
+      // 2. Connect to SecureScan OWASP ZAP Backend (FastAPI on port 8000)
+      try {
+        addLog("ZAP_INIT", `Connecting to SecureScan ZAP engine on http://localhost:8000 [Tier: ${tier.toUpperCase()}]...`);
+        const zapStartRes = await fetch(`http://localhost:8000/api/scan?target=${encodeURIComponent(rawTarget)}&tier=${tier}`, {
           method: "POST",
-          headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({
-            url: rawTarget,
-            tier,
-            attested: authorizedAttested,
-            user_id: userProfile?.email || undefined,
-          }),
         });
-        const data = await res.json();
-        
-        if (!res.ok || data.error) {
-          const friendly = formatFriendlyError(data.code || "AUDIT_ERROR", data.error || data.friendly_message);
-          showFriendlyError(
-            data.title || friendly.title,
-            data.error || friendly.message,
-            data.hint || friendly.hint,
-            data.code || friendly.code,
-            data.is_user_error !== undefined ? data.is_user_error : friendly.isUserError
-          );
-          addLog("NOTICE", `[${data.code || "NOTICE"}] ${data.error || friendly.message}`);
-          setTermStatus("FAILED");
-          setIsAuditing(false);
-          return;
-        }
 
-        finalData = data;
-        isSuccess = true;
+        if (zapStartRes.ok) {
+          const { scan_id } = await zapStartRes.json();
+          addLog("ZAP_JOB", `Scan initiated (ID: ${scan_id?.slice(0, 8)}...). Polling engine status...`);
 
-      } else {
-        // --- NEW DEEP SCAN (Python FastAPI ZAP Backend) ---
-        const res = await fetch(`http://localhost:8000/api/alerts?target=${encodeURIComponent(rawTarget)}&tier=deep`);
-        const rawData = await res.json();
+          // Resilient polling loop
+          let zapCompleted = false;
+          let zapResult: any = null;
+          const pollMaxAttempts = tier === "deep" ? 60 : 30;
+          const pollInterval = tier === "deep" ? 2500 : 1000;
 
-        if (!res.ok) {
-          throw new Error(rawData.detail || "Failed to fetch ZAP alerts from Python backend.");
-        }
+          for (let attempt = 0; attempt < pollMaxAttempts; attempt++) {
+            await new Promise((r) => setTimeout(r, pollInterval));
+            const statusRes = await fetch(`http://localhost:8000/api/scan/${scan_id}/status`);
+            if (!statusRes.ok) break;
+            const statusData = await statusRes.json();
+            
+            addLog("ZAP_PROGRESS", `[${(statusData.phase || "scanning").toUpperCase()}] ${statusData.progress || 0}% completed`);
 
-        // ZAP to CyberShield Data Adapter
-        const high = rawData.severity_counts?.High || 0;
-        const med = rawData.severity_counts?.Medium || 0;
-        const low = rawData.severity_counts?.Low || 0;
-        const calculatedScore = Math.max(0, 100 - (high * 20) - (med * 10) - (low * 5));
-        
-        let grade = "A", grade_color = "#10b981", verdict = "Secure & Resilient";
-        if (calculatedScore < 90) { grade = "B"; grade_color = "#fbbf24"; verdict = "Adequate Security"; }
-        if (calculatedScore < 70) { grade = "C"; grade_color = "#f59e0b"; verdict = "Action Required"; }
-        if (calculatedScore < 50) { grade = "D"; grade_color = "#ea580c"; verdict = "Vulnerable Target"; }
-        if (calculatedScore < 30) { grade = "F"; grade_color = "#ef4444"; verdict = "Critically Exposed"; }
+            if (statusData.status === "COMPLETED") {
+              const resRes = await fetch(`http://localhost:8000/api/scan/${scan_id}/result`);
+              if (resRes.ok) {
+                zapResult = await resRes.json();
+                zapCompleted = true;
+              }
+              break;
+            } else if (statusData.status === "FAILED") {
+              addLog("ZAP_WARN", `ZAP Engine reported error: ${statusData.error || "Scan failed"}`);
+              break;
+            }
+          }
 
-        const missingHeaders: any[] = [];
-        const leakage: any[] = [];
-        const cookies: any[] = [];
-        
-        if (rawData.findings) {
-          rawData.findings.forEach((f: any) => {
-            const n = f.name.toLowerCase();
-            if (n.includes("content security policy") || n.includes("csp")) {
-              missingHeaders.push({ name: "Content-Security-Policy", severity: f.risk, description: f.description });
-            } else if (n.includes("strict-transport-security") || n.includes("hsts")) {
-              missingHeaders.push({ name: "Strict-Transport-Security", severity: f.risk, description: f.description });
-            } else if (n.includes("x-frame-options") || n.includes("anti-clickjacking")) {
-              missingHeaders.push({ name: "X-Frame-Options", severity: f.risk, description: f.description });
-            } else if (n.includes("x-content-type-options")) {
-              missingHeaders.push({ name: "X-Content-Type-Options", severity: f.risk, description: f.description });
-            } else if (n.includes("information leak") || n.includes("server leaks") || n.includes("x-powered-by")) {
-              leakage.push({ header: f.name, value: f.evidence || "Hidden Content", risk: f.risk });
-            } else if (n.includes("cookie")) {
-              cookies.push({ 
-                  name: f.evidence || "Session_ID", 
-                  domain: rawData.target, path: "/", 
-                  secure: !n.includes("no secure flag"), 
-                  httponly: !n.includes("no httponly flag"), 
-                  samesite: "Lax" 
+          if (zapCompleted && zapResult?.findings_from_zap) {
+            addLog("ZAP_MERGE", `Merging ${zapResult.findings_from_zap.length} OWASP ZAP findings with Node telemetry...`);
+
+            if (zapResult.warnings && Array.isArray(zapResult.warnings)) {
+              zapResult.warnings.forEach((warn: string) => {
+                addLog("ZAP_WARN", `[ADD-ON ALERT] ${warn}`);
               });
             }
-          });
-        }
 
-        finalData = {
-          target: rawData.target,
-          timestamp: new Date().toISOString(),
-          score: calculatedScore,
-          grade,
-          grade_color,
-          verdict,
-          tier: "deep",
-          network: { ip: "Dynamic (ZAP Proxy)", latency_ms: Math.floor(Math.random() * 50) + 20 },
-          http: {
-            infrastructure: "Detected via ZAP",
-            redirect_secure: true,
-            missing_headers: missingHeaders,
-            present_headers: { "Server": "Protected" }, 
-            leakage: leakage,
-            cookies: cookies
-          },
-          tls: {
-            tls_version: "TLSv1.3 (Simulated)",
-            cipher_suite: "TLS_AES_256_GCM_SHA384",
-            issuer_org: "ZAP Proxy CA",
-            cert_expires_in_days: 90,
-            cert_valid: true,
-            protocol_secure: true,
-            fingerprint_sha256: "ZAP:PROXY:TEST:CERTIFICATE:..."
-          },
-          findings: rawData.findings || [], 
-          deductions: (rawData.findings || []).map((f:any)=>f.name)
-        };
-        isSuccess = true;
+            if (tier === "deep" && zapResult.rules_actually_enabled) {
+              const enabledList = Object.keys(zapResult.rules_actually_enabled);
+              addLog("ZAP_RULES", `Active scan plugins enabled: [${enabledList.join(", ")}]`);
+              if (!enabledList.includes("41")) {
+                addLog("ZAP_WARN", "[MISSING ADD-ON] Plugin 41 (Git Exposure) not found in ZAP. Install 'Beta Active Scan Rules'.");
+              }
+              if (!enabledList.includes("40040")) {
+                addLog("ZAP_WARN", "[MISSING ADD-ON] Plugin 40040 (CORS Misconfig) not found in ZAP. Install 'Alpha Active Scan Rules'.");
+              }
+            }
+
+            if (tier === "basic" && zapResult.retirejs_available === false) {
+              addLog("ZAP_WARN", "[MISSING ADD-ON] Retire.js scanner not found in ZAP. Install 'retire' add-on to detect vulnerable JS libraries.");
+            }
+
+            const zapFindings = zapResult.findings_from_zap.map((f: any, idx: number) => ({
+              id: f.id || `ZAP-${idx + 1}`,
+              title: f.name || "ZAP Detected Vulnerability",
+              severity: f.risk || "Medium",
+              confidence: f.confidence === "High" ? "confirmed" : "likely",
+              evidence: f.evidence || f.url || "",
+              cwe: f.cwe || "CWE-693",
+              owasp: f.category || "A05:2021-Security Misconfiguration",
+              wstg: "WSTG-CONF-07",
+              remediation: f.solution || f.description || "Review configuration in accordance with OWASP guidance.",
+              tier,
+            }));
+
+            // Merge findings
+            finalData.findings = [...(finalData.findings || []), ...zapFindings];
+
+            // In Basic tier: merge security headers, cookie flags, server info, and directory browsing
+            if (tier === "basic") {
+              zapResult.findings_from_zap.forEach((zf: any) => {
+                if (zf.category === "security_headers" && !finalData.http.missing_headers.some((h: any) => h.name.toLowerCase() === zf.name.toLowerCase())) {
+                  finalData.http.missing_headers.push({
+                    name: zf.name,
+                    severity: zf.risk || "Medium",
+                    description: zf.description || zf.solution || "",
+                  });
+                } else if (zf.category === "server_info_disclosure") {
+                  finalData.http.leakage.push({
+                    header: zf.name,
+                    value: zf.evidence || "Server banner exposed",
+                    risk: zf.risk || "Low",
+                  });
+                }
+              });
+            }
+
+            // Recalculate score reflecting both Node + ZAP findings
+            const highCount = finalData.findings.filter((f: any) => ["Critical", "High"].includes(f.severity)).length;
+            const medCount = finalData.findings.filter((f: any) => f.severity === "Medium").length;
+            const lowCount = finalData.findings.filter((f: any) => f.severity === "Low").length;
+            finalData.score = Math.max(0, 100 - (highCount * 20) - (medCount * 10) - (lowCount * 5));
+            if (finalData.score >= 90) { finalData.grade = "A"; finalData.grade_color = "#10b981"; finalData.verdict = "Secure & Resilient"; }
+            else if (finalData.score >= 70) { finalData.grade = "B"; finalData.grade_color = "#fbbf24"; finalData.verdict = "Adequate Security"; }
+            else if (finalData.score >= 50) { finalData.grade = "C"; finalData.grade_color = "#f59e0b"; finalData.verdict = "Action Required"; }
+            else if (finalData.score >= 30) { finalData.grade = "D"; finalData.grade_color = "#ea580c"; finalData.verdict = "Vulnerable Target"; }
+            else { finalData.grade = "F"; finalData.grade_color = "#ef4444"; finalData.verdict = "Critically Exposed"; }
+          }
+        } else {
+          const errBody = await zapStartRes.json().catch(() => ({}));
+          addLog("ZAP_NOTICE", `ZAP Engine: ${errBody.detail || "Service inactive"}. Displaying Node telemetry.`);
+        }
+      } catch (zapErr: any) {
+        addLog("ZAP_OFFLINE", "SecureScan ZAP backend (port 8000) not reachable. Full Node telemetry loaded.");
       }
 
       if (isSuccess && finalData) {
         addLog("SUCCESS", `Audit completed in ${Date.now() - startTime}ms. Threat Score: ${finalData.score}/100 [Grade ${finalData.grade}]`);
         setTermStatus("FINISHED");
-        playSound("success");
 
         setTimeout(() => {
           setAuditData(finalData);
@@ -658,13 +555,11 @@ export default function CyberShieldPage() {
   };
 
   const handleQuickPreset = (domain: string) => {
-    playSound("click");
     handleTargetChange(domain);
     clearError();
   };
 
   const copyJson = () => {
-    playSound("click");
     if (!auditData) return;
     navigator.clipboard.writeText(JSON.stringify(auditData, null, 2));
     setCopyJsonText("Copied!");
@@ -672,7 +567,6 @@ export default function CyberShieldPage() {
   };
 
   const downloadJson = () => {
-    playSound("click");
     if (!auditData) return;
     const blob = new Blob([JSON.stringify(auditData, null, 2)], {
       type: "application/json",
@@ -686,7 +580,6 @@ export default function CyberShieldPage() {
   };
 
   const copyMarkdown = () => {
-    playSound("click");
     if (!auditData) return;
     const d = auditData;
     const md = `# CyberShield Security Audit Report: ${d.target}
@@ -722,7 +615,6 @@ ${Object.keys(d.http.present_headers || {})
   };
 
   const openRemediation = (headerName: string) => {
-    playSound("click");
     setRemedModal({
       open: true,
       header: headerName,
@@ -732,7 +624,6 @@ ${Object.keys(d.http.present_headers || {})
   };
 
   const copyRemedSnippet = () => {
-    playSound("click");
     const item = REMEDIATION_DB[remedModal.header];
     const snippet = item ? item[remedModal.tab] : `// Configuration for ${remedModal.header}`;
     navigator.clipboard.writeText(snippet);
@@ -742,7 +633,6 @@ ${Object.keys(d.http.present_headers || {})
 
   const handleAuthSubmit = (e: React.FormEvent) => {
     e.preventDefault();
-    playSound("success");
     const name = authName.trim() || authEmail.split("@")[0] || "SecOps Analyst";
     const initials = name.slice(0, 2).toUpperCase();
     setUserProfile({ name, email: authEmail, initials });
@@ -750,13 +640,11 @@ ${Object.keys(d.http.present_headers || {})
   };
 
   const handleSignOut = () => {
-    playSound("click");
     setUserProfile(null);
     setIsProfileDropdownOpen(false);
   };
 
   const clearHistory = () => {
-    playSound("click");
     if (confirm("Clear all local audit history?")) {
       setScanHistory([]);
       localStorage.removeItem("cybershield-history");
@@ -849,40 +737,12 @@ ${Object.keys(d.http.present_headers || {})
           </a>
 
           <div className="nav-actions">
-            {/* Sound Toggle */}
-            <div className="chromatic-capsule">
-              <button
-                className="chromatic-circle-btn"
-                id="audioToggleBtn"
-                onClick={toggleAudio}
-                title="Toggle Sound FX"
-                aria-label="Toggle sound"
-              >
-                <div className="chromatic-circle-inner">
-                  {isAudioMuted ? (
-                    <svg id="audioIconOff" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth="2.2" strokeLinecap="round" strokeLinejoin="round">
-                      <polygon points="11 5 6 9 2 9 2 15 6 15 11 19 11 5" />
-                      <line x1="23" y1="9" x2="17" y2="15" />
-                      <line x1="17" y1="9" x2="23" y2="15" />
-                    </svg>
-                  ) : (
-                    <svg id="audioIconOn" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth="2.2" strokeLinecap="round" strokeLinejoin="round">
-                      <polygon points="11 5 6 9 2 9 2 15 6 15 11 19 11 5" />
-                      <path d="M15.54 8.46a5 5 0 0 1 0 7.07" />
-                      <path d="M19.07 4.93a10 10 0 0 1 0 14.14" />
-                    </svg>
-                  )}
-                </div>
-              </button>
-            </div>
-
             {/* History Drawer Trigger */}
             <div className="chromatic-capsule" style={{ position: "relative" }}>
               <button
                 className="chromatic-circle-btn"
                 id="historyDrawerBtn"
                 onClick={() => {
-                  playSound("click");
                   setIsHistoryOpen(true);
                 }}
                 title="View Audit History [H]"
@@ -935,7 +795,6 @@ ${Object.keys(d.http.present_headers || {})
                 className="auth-pill-btn"
                 id="openAuthBtn"
                 onClick={() => {
-                  playSound("click");
                   setAuthModal({ open: true, tab: "signin" });
                 }}
               >
@@ -952,7 +811,6 @@ ${Object.keys(d.http.present_headers || {})
                     className="chromatic-circle-btn"
                     id="profileMenuBtn"
                     onClick={(e) => {
-                      playSound("click");
                       e.stopPropagation();
                       setIsProfileDropdownOpen((prev) => !prev);
                     }}
@@ -1059,7 +917,6 @@ ${Object.keys(d.http.present_headers || {})
               type="button"
               className={`tier-btn ${tier === "basic" ? "active" : ""}`}
               onClick={() => {
-                playSound("click");
                 setTier("basic");
                 setAuthorizedAttested(false);
               }}
@@ -1074,7 +931,6 @@ ${Object.keys(d.http.present_headers || {})
               type="button"
               className={`tier-btn ${tier === "deep" ? "active" : ""}`}
               onClick={() => {
-                playSound("click");
                 setTier("deep");
               }}
             >
@@ -1769,7 +1625,6 @@ ${Object.keys(d.http.present_headers || {})
             <button
               className="modal-close-btn"
               onClick={() => {
-                playSound("click");
                 setRemedModal((p) => ({ ...p, open: false }));
               }}
             >
@@ -1808,7 +1663,6 @@ ${Object.keys(d.http.present_headers || {})
                   key={tab}
                   className={`remed-tab-btn ${remedModal.tab === tab ? "active" : ""}`}
                   onClick={() => {
-                    playSound("click");
                     setRemedModal((p) => ({ ...p, tab }));
                   }}
                 >
@@ -1836,7 +1690,6 @@ ${Object.keys(d.http.present_headers || {})
           className="drawer-backdrop open"
           id="historyDrawer"
           onClick={() => {
-            playSound("click");
             setIsHistoryOpen(false);
           }}
         >
@@ -1858,7 +1711,6 @@ ${Object.keys(d.http.present_headers || {})
                 className="modal-close-btn"
                 style={{ position: "static" }}
                 onClick={() => {
-                  playSound("click");
                   setIsHistoryOpen(false);
                 }}
               >
@@ -1880,7 +1732,6 @@ ${Object.keys(d.http.present_headers || {})
                     key={idx}
                     className="drawer-item"
                     onClick={() => {
-                      playSound("click");
                       setAuditData(item);
                       setIsHistoryOpen(false);
                     }}
@@ -1933,7 +1784,6 @@ ${Object.keys(d.http.present_headers || {})
             <button
               className="modal-close-btn"
               onClick={() => {
-                playSound("click");
                 setAuthModal((p) => ({ ...p, open: false }));
               }}
             >
@@ -1956,7 +1806,6 @@ ${Object.keys(d.http.present_headers || {})
                 className={`auth-tab-btn ${authModal.tab === "signin" ? "active" : ""}`}
                 id="tabSignIn"
                 onClick={() => {
-                  playSound("click");
                   setAuthModal((p) => ({ ...p, tab: "signin" }));
                 }}
               >
@@ -1966,7 +1815,6 @@ ${Object.keys(d.http.present_headers || {})
                 className={`auth-tab-btn ${authModal.tab === "signup" ? "active" : ""}`}
                 id="tabSignUp"
                 onClick={() => {
-                  playSound("click");
                   setAuthModal((p) => ({ ...p, tab: "signup" }));
                 }}
               >
